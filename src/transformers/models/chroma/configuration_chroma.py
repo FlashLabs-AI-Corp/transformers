@@ -133,62 +133,59 @@ class ChromaConfig(PretrainedConfig):
 
     sub_configs = {
         "thinker_config": Qwen2_5OmniThinkerConfig,
-        "codec_config": AutoConfig,
+        "codec_config": MimiConfig,
         "backbone_config": ChromaBackboneConfig,
         "decoder_config": ChromaDecoderConfig
     }
 
     def __init__(
         self,
-        thinker_config: Optional[dict] = None,
-        backbone_config: Optional[dict] = None,
-        decoder_config: Optional[dict] = None,
-        codec_config: Optional[dict] = None,
-        codebook_pad_token_id: Optional[int] = 2050,
-        codebook_eos_token_id: Optional[int] = 0,
-        audio_num_codebooks: Optional[int] = 8,
+        thinker_config=None,
+        backbone_config=None,
+        decoder_config=None,
+        codec_config=None,
+        codebook_pad_token_id=2050,
+        codebook_eos_token_id=0,
+        audio_num_codebooks=32,
         **kwargs
     ):
         # thinker config
-        if thinker_config is None:
-            self.thinker_config = Qwen2_5OmniThinkerConfig()
-            logger.info("chroma_thinker is None, using default thinker config.")
-        elif isinstance(thinker_config, dict):
+        if isinstance(thinker_config, dict):
             self.thinker_config = Qwen2_5OmniThinkerConfig(**thinker_config)
         elif isinstance(thinker_config, Qwen2_5OmniThinkerConfig):
             self.thinker_config = thinker_config
+        else:
+            self.thinker_config = Qwen2_5OmniThinkerConfig()
 
         # backbone config
-        if backbone_config is None:
-            self.backbone_config = ChromaBackboneConfig()
-            logger.info("backbone_config is None, using default backbone config.")
-        elif isinstance(backbone_config, dict):
-            backbone_config = ChromaBackboneConfig(**backbone_config)
+        if isinstance(backbone_config, dict):
+            self.backbone_config = ChromaBackboneConfig(**backbone_config)
         elif isinstance(backbone_config, ChromaBackboneConfig):
-            backbone_config = ChromaBackboneConfig(audio_num_codebooks=audio_num_codebooks)
+            self.backbone_config = backbone_config
+        else:
+            self.backbone_config = ChromaBackboneConfig(audio_num_codebooks=audio_num_codebooks)
 
         # decoder config
-        if decoder_config is None:
-            decoder_config = ChromaDecoderConfig(audio_num_codebooks=audio_num_codebooks)
-            logger.info("decoder_config is None, using default decoder config.")
-        elif isinstance(decoder_config, dict):
-            decoder_config = ChromaDecoderConfig(**decoder_config)
+        if isinstance(decoder_config, dict):
+            self.decoder_config = ChromaDecoderConfig(**decoder_config)
         elif isinstance(decoder_config, ChromaDecoderConfig):
-            decoder_config = ChromaDecoderConfig(audio_num_codebooks=audio_num_codebooks)
+            self.decoder_config = decoder_config
+        else:
+            self.decoder_config = ChromaDecoderConfig(audio_num_codebooks=audio_num_codebooks)
 
-        # codec config
-        if codec_config is None:
-            codec_config = MimiConfig(num_quantizers=audio_num_codebooks)
+        # codec config (Mimi)
+        if isinstance(codec_config, dict):
+            self.codec_config = MimiConfig(**codec_config)
 
-        self.thinker_config = thinker_config
-        self.backbone_config = backbone_config
-        self.decoder_config = decoder_config
-        self.codec_config = codec_config
+        elif isinstance(codec_config, MimiConfig):
+            self.codec_config = codec_config
+        elif codec_config is None:
+            self.codec_config = MimiConfig(num_quantizers=audio_num_codebooks)
+        
+
         self.audio_num_codebooks = audio_num_codebooks
-
         self.codebook_pad_token_id = codebook_pad_token_id
         self.codebook_eos_token_id = codebook_eos_token_id
-
         super().__init__(**kwargs)
 
 

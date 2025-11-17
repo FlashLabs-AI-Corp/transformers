@@ -22,15 +22,17 @@ from typing import Optional, Tuple, Dict, Union, Any
 from .configuration_chroma import ChromaConfig, ChromaDecoderConfig, ChromaBackboneConfig
 from .generation_chroma import ChromaGenerationMixin
 from ..llama import LlamaConfig
-from ...modeling_utils import ModelOutput
 from ...generation.streamers import BaseStreamer
 from ..llama.modeling_llama import LlamaModel
 from ..qwen2_5_omni import Qwen2_5OmniThinkerForConditionalGeneration
-from .. import PreTrainedModel, GenerationMixin, AutoModel
-
+from ...utils import ModelOutput
+from ...modeling_utils import PreTrainedModel
+from ...models.auto import AutoModel
 from ...utils import logging
+from ...generation import GenerationMixin
 from ...cache_utils import Cache
 from ...modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
+from ...models.mimi import MimiModel
 
 logger = logging.get_logger(__name__)
 
@@ -469,10 +471,9 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
     _supports_flash_attn_2 = True
     _supports_cache_class = True
 
-    _tied_weights_keys = [
-        "backbone.audio_embedding.embed_audio_tokens.weight",
-        "decoder.audio_embedding.embed_audio_tokens.weight",
-    ]
+    _tied_weights_keys = {
+        "backbone.audio_embedding.embed_audio_tokens.weight": "decoder.audio_embedding.embed_audio_tokens.weight",
+    }
 
     def __init__(self, config: ChromaConfig):
         super().__init__(config)
