@@ -57,6 +57,7 @@ if TYPE_CHECKING:
     from .canine import *
     from .chameleon import *
     from .chinese_clip import *
+    from .chroma import *
     from .clap import *
     from .clip import *
     from .clipseg import *

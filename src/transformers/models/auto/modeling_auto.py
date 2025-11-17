@@ -82,6 +82,7 @@ MODEL_MAPPING_NAMES = OrderedDict(
         ("chameleon", "ChameleonModel"),
         ("chinese_clip", "ChineseCLIPModel"),
         ("chinese_clip_vision_model", "ChineseCLIPVisionModel"),
+        ("chroma", "ChromaForConditionalGeneration"),
         ("clap", "ClapModel"),
         ("clip", "CLIPModel"),
         ("clip_text_model", "CLIPTextModel"),
