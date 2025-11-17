@@ -14,6 +14,7 @@
 # limitations under the License.
 
 
+
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -32,7 +33,6 @@ from ...utils import logging
 from ...generation import GenerationMixin
 from ...cache_utils import Cache
 from ...modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
-from ...models.mimi import MimiModel
 
 logger = logging.get_logger(__name__)
 
@@ -685,7 +685,7 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
         audio_codes = self.codec_model.encode(
             input_values.unsqueeze(0).unsqueeze(0)
         )
-        audio_codes = audio_codes[:, :self.config.backbone_config.audio_num_codebooks, :]
+        audio_codes = audio_codes.audio_codes[:, :self.config.backbone_config.audio_num_codebooks, :]
         prompt_audio_emb = self.backbone.emb_audio_frames(
             audio_codes.permute(0, 2, 1).to(self.device)
         )
