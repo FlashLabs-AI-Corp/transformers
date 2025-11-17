@@ -154,7 +154,7 @@ class ChromaConfig(PretrainedConfig):
             self.thinker_config = Qwen2_5OmniThinkerConfig(**thinker_config)
         elif isinstance(thinker_config, Qwen2_5OmniThinkerConfig):
             self.thinker_config = thinker_config
-        else:
+        elif thinker_config is None:
             self.thinker_config = Qwen2_5OmniThinkerConfig()
 
         # backbone config
@@ -162,7 +162,7 @@ class ChromaConfig(PretrainedConfig):
             self.backbone_config = ChromaBackboneConfig(**backbone_config)
         elif isinstance(backbone_config, ChromaBackboneConfig):
             self.backbone_config = backbone_config
-        else:
+        elif backbone_config is None:
             self.backbone_config = ChromaBackboneConfig(audio_num_codebooks=audio_num_codebooks)
 
         # decoder config
@@ -170,18 +170,16 @@ class ChromaConfig(PretrainedConfig):
             self.decoder_config = ChromaDecoderConfig(**decoder_config)
         elif isinstance(decoder_config, ChromaDecoderConfig):
             self.decoder_config = decoder_config
-        else:
+        elif decoder_config is None:
             self.decoder_config = ChromaDecoderConfig(audio_num_codebooks=audio_num_codebooks)
 
         # codec config (Mimi)
         if isinstance(codec_config, dict):
             self.codec_config = MimiConfig(**codec_config)
-
         elif isinstance(codec_config, MimiConfig):
             self.codec_config = codec_config
         elif codec_config is None:
             self.codec_config = MimiConfig(num_quantizers=audio_num_codebooks)
-        
 
         self.audio_num_codebooks = audio_num_codebooks
         self.codebook_pad_token_id = codebook_pad_token_id
