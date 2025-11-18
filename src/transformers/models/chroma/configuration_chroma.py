@@ -146,7 +146,7 @@ class ChromaConfig(PretrainedConfig):
         codec_config=None,
         codebook_pad_token_id=2050,
         codebook_eos_token_id=0,
-        audio_num_codebooks=32,
+        audio_num_codebooks=8,
         **kwargs
     ):
         # thinker config
@@ -179,7 +179,7 @@ class ChromaConfig(PretrainedConfig):
         elif isinstance(codec_config, MimiConfig):
             self.codec_config = codec_config
         elif codec_config is None:
-            self.codec_config = MimiConfig(num_quantizers=audio_num_codebooks)
+            self.codec_config = MimiConfig(num_quantizers=audio_num_codebooks, frame_rate=12.5)
 
         self.audio_num_codebooks = audio_num_codebooks
         self.codebook_pad_token_id = codebook_pad_token_id
