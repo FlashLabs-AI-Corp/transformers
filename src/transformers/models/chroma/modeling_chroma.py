@@ -550,16 +550,11 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
             注入后将 thinker_flag 置 False；未注入时将其置 True，从而形成 1:2。
         """
 
-        # 如果是预填充模式,直接使用audio frame embedding(prompt已经在KV cache中)
-        if past_key_values is not None:
-            inputs_ids = None
-            input_values = None
-            inputs_embeds = None
-        elif input_values is not None:
-            # input_values only exists in the first step (非预填充模式)
+        if input_values is not None:
+            # first step: build inputs_embeds from input_values
             inputs_embeds, attention_mask = self._build_prompt_embeds(input_ids, attention_mask, input_values)
         else:
-            # 后续步骤,使用audio frame embedding
+            # subsequent steps: build inputs_embeds from input_ids
             inputs_embeds = self.backbone.emb_audio_frames(
                 input_ids.squeeze(0).to(self.device)
             ).unsqueeze(0)
