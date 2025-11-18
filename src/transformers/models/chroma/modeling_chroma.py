@@ -33,6 +33,7 @@ from ...utils import logging
 from ...generation import GenerationMixin
 from ...cache_utils import Cache
 from ...modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
+from ..mimi.modeling_mimi import MimiModel
 
 logger = logging.get_logger(__name__)
 
@@ -480,7 +481,7 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
         self.thinker = Qwen2_5OmniThinkerForConditionalGeneration._from_config(config.thinker_config)
         self.backbone = ChromaBackboneForCausalLM._from_config(config.backbone_config)
         self.decoder = ChromaDecoderForCausalLM._from_config(config.decoder_config)
-        self.codec_model = AutoModel.from_config(config.codec_config)
+        self.codec_model = MimiModel._from_config(config.codec_config)
 
         assert self.backbone.config.audio_num_codebooks == config.audio_num_codebooks, f"backbone.config.audio_num_codebooks {self.backbone.config.audio_num_codebooks} != config.audio_num_codebooks {config.audio_num_codebooks}"
         assert self.decoder.config.audio_num_codebooks == config.audio_num_codebooks, f"decoder.config.audio_num_codebooks {self.decoder.config.audio_num_codebooks} != config.audio_num_codebooks {config.audio_num_codebooks}"
@@ -679,8 +680,8 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
 
         audio_codes = self.codec_model.encode(
             input_values.unsqueeze(0).unsqueeze(0)
-        )
-        audio_codes = audio_codes.audio_codes[:, :self.config.backbone_config.audio_num_codebooks, :]
+        ).audio_codes
+        audio_codes = audio_codes[:, :self.config.backbone_config.audio_num_codebooks, :]
         prompt_audio_emb = self.backbone.emb_audio_frames(
             audio_codes.permute(0, 2, 1).to(self.device)
         )
