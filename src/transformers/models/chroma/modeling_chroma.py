@@ -114,15 +114,18 @@ class ChromaPreTrainedModel(PreTrainedModel):
     def _init_weights(self, module):
         std = self.config.initializer_range if hasattr(self.config, "initializer_range") else 0.02
         if isinstance(module, nn.Linear):
-            module.weight.data.normal_(mean=0.0, std=std)
-            if module.bias is not None:
+            if not getattr(module.weight, "_is_hf_initialized", False):
+                module.weight.data.normal_(mean=0.0, std=std)
+            if module.bias is not None and not getattr(module.bias, "_is_hf_initialized", False):
                 module.bias.data.zero_()
         elif isinstance(module, nn.Embedding):
-            module.weight.data.normal_(mean=0.0, std=std)
-            if module.padding_idx is not None:
+            if not getattr(module.weight, "_is_hf_initialized", False):
+                module.weight.data.normal_(mean=0.0, std=std)
+            if module.padding_idx is not None and not getattr(module.weight, "_is_hf_initialized", False):
                 module.weight.data[module.padding_idx].zero_()
         elif isinstance(module, ChromaCodebookHead):
-            module.weight.data.normal_(mean=0.0, std=std)
+            if not getattr(module.weight, "_is_hf_initialized", False):
+                module.weight.data.normal_(mean=0.0, std=std)
 
 
 class ChromaAudioEmbedding(nn.Module):
@@ -472,10 +475,6 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
     _supports_flash_attn_2 = True
     _supports_cache_class = True
 
-    _tied_weights_keys = {
-        "backbone.audio_embedding.embed_audio_tokens.weight": "decoder.audio_embedding.embed_audio_tokens.weight",
-    }
-
     def __init__(self, config: ChromaConfig):
         super().__init__(config)
         self.thinker = Qwen2_5OmniThinkerForConditionalGeneration._from_config(config.thinker_config)
@@ -487,12 +486,6 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
         assert self.decoder.config.audio_num_codebooks == config.audio_num_codebooks, f"decoder.config.audio_num_codebooks {self.decoder.config.audio_num_codebooks} != config.audio_num_codebooks {config.audio_num_codebooks}"
 
         self.post_init()
-
-    def _tie_weights(self):
-        self._tie_or_clone_weights(
-            self.backbone.audio_embedding.embed_audio_tokens,
-            self.decoder.audio_embedding.embed_audio_tokens,
-        )
 
     def _embed_text_tokens(self, ids: torch.Tensor) -> torch.Tensor:
         if hasattr(self, "thinker"):
