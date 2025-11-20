@@ -14,7 +14,6 @@
 # limitations under the License.
 
 
-
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -475,6 +474,10 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
     _supports_flash_attn_2 = True
     _supports_cache_class = True
 
+    _tied_weights_keys = {
+        "backbone.audio_embedding.embed_audio_tokens.weight": "decoder.audio_embedding.embed_audio_tokens.weight",
+    }
+
     def __init__(self, config: ChromaConfig):
         super().__init__(config)
         self.thinker = Qwen2_5OmniThinkerForConditionalGeneration._from_config(config.thinker_config)
@@ -486,6 +489,12 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
         assert self.decoder.config.audio_num_codebooks == config.audio_num_codebooks, f"decoder.config.audio_num_codebooks {self.decoder.config.audio_num_codebooks} != config.audio_num_codebooks {config.audio_num_codebooks}"
 
         self.post_init()
+
+    def _tie_weights(self):
+        self._tie_or_clone_weights(
+            self.backbone.audio_embedding.embed_audio_tokens,
+            self.decoder.audio_embedding.embed_audio_tokens,
+        )
 
     def _embed_text_tokens(self, ids: torch.Tensor) -> torch.Tensor:
         if hasattr(self, "thinker"):
