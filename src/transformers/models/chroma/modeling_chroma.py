@@ -36,12 +36,6 @@ from ..mimi.modeling_mimi import MimiModel
 
 logger = logging.get_logger(__name__)
 
-D_SPECIAL_TOKEN_2_IDS = {
-    "<|text_start|>": 151665,
-    "<|text_end|>": 151666,
-    "<|im_end|>": 151645
-}
-
 PASSTHROUGH_KEYS = [
     "thinker_input_ids",
     "thinker_attention_mask",
@@ -489,12 +483,17 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
         assert self.decoder.config.audio_num_codebooks == config.audio_num_codebooks, f"decoder.config.audio_num_codebooks {self.decoder.config.audio_num_codebooks} != config.audio_num_codebooks {config.audio_num_codebooks}"
 
         self.post_init()
+        
+        # 标记 buffer 是否已初始化（延迟初始化以避免 meta device 问题）
+        self._prompt_embeddings_initialized = False
 
     def _tie_weights(self):
         self._tie_or_clone_weights(
             self.backbone.audio_embedding.embed_audio_tokens,
             self.decoder.audio_embedding.embed_audio_tokens,
         )
+
+
 
     def _embed_text_tokens(self, ids: torch.Tensor) -> torch.Tensor:
         if hasattr(self, "thinker"):
@@ -506,6 +505,7 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
         self,
         input_ids: Optional[torch.LongTensor] = None,
         input_values: Optional[torch.FloatTensor] = None,
+        input_values_cutoffs: Optional[torch.LongTensor] = None,
         past_key_values: Optional[Cache] = None,
         attention_mask: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
@@ -528,6 +528,7 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
         args:
             input_ids: [B, seq_len]
             input_values: [B, channels, audio_seq_len]
+            input_values_cutoffs: [B, max_num_audio]
             past_key_values: [B, num_layers, num_heads, seq_len, hidden_size]
             attention_mask: [B, seq_len]
             inputs_embeds: [B, seq_len, hidden_size]
@@ -555,7 +556,7 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
 
         if input_values is not None:
             # first step: build inputs_embeds from input_values
-            inputs_embeds, attention_mask = self._build_prompt_embeds(input_ids, attention_mask, input_values)
+            inputs_embeds, attention_mask = self._build_prompt_embeds(input_ids, attention_mask, input_values, input_values_cutoffs)
         else:
             # subsequent steps: build inputs_embeds from input_ids
             inputs_embeds = self.backbone.emb_audio_frames(
@@ -596,7 +597,7 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
 
             next_token_emb = self._embed_text_tokens(thinker_next_ids)
 
-            stop_eos = D_SPECIAL_TOKEN_2_IDS.get("<|im_end|>")
+            stop_eos = self.config.im_end_token_id
             is_eos = (thinker_next_ids.squeeze(-1) == stop_eos).any()
             thinker_input_ids = thinker_next_ids if not is_eos else None
 
@@ -668,61 +669,92 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
 
         return model_inputs
 
-    def _build_prompt_embeds(self, input_ids, attention_mask=None, input_values=None):
+    @torch.no_grad()
+    def _register_prompt_embeddings(self):
+        
+        # text_start_emb
+        text_start_ids = torch.tensor([self.config.text_start_token_id], dtype=torch.long, device=self.device)
+        text_start_emb = self.thinker.model.embed_tokens(text_start_ids).squeeze(0)
+        self.register_buffer("text_start_emb", text_start_emb, persistent=False)
+        
+        # text_end_emb
+        text_end_ids = torch.tensor([self.config.text_end_token_id], dtype=torch.long, device=self.device)
+        text_end_emb = self.thinker.model.embed_tokens(text_end_ids).squeeze(0)
+        self.register_buffer("text_end_emb", text_end_emb, persistent=False)
+        
+        # eos_token_audio
+        eos_token_audio = torch.zeros(self.config.backbone_config.hidden_size, dtype=text_start_emb.dtype, device=self.device)
+        self.register_buffer("eos_token_audio", eos_token_audio, persistent=False)
+
+
+        
+        self._prompt_embeddings_initialized = True
+
+    def chroma.generate(**inputs, max_new_tokens=100, do_sample=True, temperature=0.7, top_p=0.8, use_cache=False)(
+        self, 
+        input_ids, 
+        attention_mask=None, 
+        input_values=None,
+        input_values_cutoffs=None,
+    ):
         """
         Build QSM input embeddings according to the specified layout for generation
 
         Args:
-            input_ids: prompt text ids
-            attention_mask:
-            input_values: prompt audio waveform
+            input_ids [B, seq_len]: prompt text ids
+            attention_mask [B, seq_len]: attention mask
+            input_value Tensor[B, channels(1), audio_seq_len]: prompt audio waveform
+            input_values_cutoffs Tensor[B, max_num_audio]: prompt audio waveform cutoffs
 
         Returns:
+            input_embeddings [B, seq_len, hidden_size]: input embeddings
+            attention_mask [B, seq_len]: attention mask
         """
 
-        audio_codes = self.codec_model.encode(
-            input_values.unsqueeze(0).unsqueeze(0)
-        ).audio_codes
-        audio_codes = audio_codes[:, :self.config.backbone_config.audio_num_codebooks, :]
+        if not self._prompt_embeddings_initialized:
+            self._register_prompt_embeddings()
+
+        N = input_ids.shape[0]
+        assert N == input_values.shape[0], f"input_values.shape[0] {input_values.shape[0]} != input_ids.shape[0] {N}"
+        assert N == input_values_cutoffs.shape[0], f"input_values_cutoffs.shape[0] {input_values_cutoffs.shape[0]} != input_ids.shape[0] {input_ids.shape[0]}"
+        assert N == attention_mask.shape[0], f"attention_mask.shape[0] {attention_mask.shape[0]} != input_ids.shape[0] {N}"
+
+        audio_codes = self.codec_model.encode(input_values).audio_codes  # add channel dimension
+        audio_codes = audio_codes[:, :self.config.audio_num_codebooks, :]  # HACK: may not necessary
+
         prompt_audio_emb = self.backbone.emb_audio_frames(
             audio_codes.permute(0, 2, 1).to(self.device)
         )
+        prompt_audio_attention_mask = torch.ones((N, prompt_audio_emb.shape[1]), device=self.device)
+        audio_codes_cutoffs = torch.ceil(input_values_cutoffs / self.config.audio_frame_freq).long()
+        mask = torch.arange(prompt_audio_emb.shape[1], device=self.device).unsqueeze(0).expand(N, -1) >= audio_codes_cutoffs.unsqueeze(1).expand(N, -1)
+        prompt_audio_attention_mask[mask] = 0
 
         prompt_text_emb = self._embed_text_tokens(input_ids.to(self.device))
+        prompt_text_attention_mask = attention_mask.clone()
 
-        # TODO: should support batch input
-        inputs_emb = []
+        len_embeddings = prompt_text_emb.shape[1] + prompt_audio_emb.shape[1] + 3
+        input_embeddings = torch.empty(N, len_embeddings, self.config.backbone_config.hidden_size, device=self.device)
+        input_embeddings[:, :prompt_text_emb.shape[1]] = prompt_text_emb
+        input_embeddings[:, prompt_text_emb.shape[1]:prompt_text_emb.shape[1] + prompt_audio_emb.shape[1]] = prompt_audio_emb
+        input_embeddings[:, prompt_text_emb.shape[1] + prompt_audio_emb.shape[1]] = self.text_start_emb
+        input_embeddings[:, prompt_text_emb.shape[1] + prompt_audio_emb.shape[1] + 1] = self.text_end_emb
+        input_embeddings[:, prompt_text_emb.shape[1] + prompt_audio_emb.shape[1] + 2] = self.eos_token_audio
+        
+        _attention_mask = torch.cat([prompt_text_attention_mask, prompt_audio_attention_mask], dim=1)
 
-        # add ref text and audio
-        # add text start
-        text_start_ids = torch.tensor([D_SPECIAL_TOKEN_2_IDS.get("<|text_start|>")], dtype=torch.long)
-        text_start_emb = self._embed_text_tokens(text_start_ids).unsqueeze(0)
-        inputs_emb.append(text_start_emb)
-
-        inputs_emb.append(prompt_text_emb)
-
-        # add text end
-        text_end_ids = torch.tensor([D_SPECIAL_TOKEN_2_IDS.get("<|text_end|>")], dtype=torch.long)
-        text_end_emb = self._embed_text_tokens(text_end_ids).unsqueeze(0)
-        inputs_emb.append(text_end_emb)
-
-        inputs_emb.append(prompt_audio_emb)
-
-        # add eos of ref audio
-        eos_token_audio = torch.full((1, prompt_audio_emb.shape[-1]), 0, dtype=prompt_audio_emb.dtype,
-                                     device=prompt_audio_emb.device).unsqueeze(0)
-        inputs_emb.append(eos_token_audio)
-
-        # concat all parts
-        input_embeddings = torch.cat(inputs_emb, dim=1)
-        # must modify attention_mask inplace to affect model_kwargs
         if attention_mask is not None:
-            attention_mask = attention_mask.resize_(
-                (attention_mask.shape[0], attention_mask.shape[1] + input_embeddings.shape[1])).fill_(1)
+            attention_mask = attention_mask.resize_(_attention_mask.shape)
         else:
-            attention_mask = torch.ones((1, input_embeddings.shape[1]), device=input_embeddings.device)
+            attention_mask = _attention_mask
 
         return input_embeddings, attention_mask
+
+    def _left_pad_compact_vec(self, x):
+        is_token = (x != self.config.codebook_pad_token_id).int()
+        _, idx = torch.sort(is_token, dim=-1, descending=False, stable=True)
+        x_reordered = torch.gather(x, dim=1, index=idx)
+        return x_reordered
 
     def forward(
         self,

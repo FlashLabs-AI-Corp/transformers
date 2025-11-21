@@ -147,6 +147,10 @@ class ChromaConfig(PretrainedConfig):
         codebook_pad_token_id=2050,
         codebook_eos_token_id=0,
         audio_num_codebooks=8,
+        text_start_token_id=151665,
+        text_end_token_id=151666,
+        im_end_token_id=151645,
+        audio_frame_freq=1920,
         **kwargs
     ):
         # thinker config
@@ -184,6 +188,10 @@ class ChromaConfig(PretrainedConfig):
         self.audio_num_codebooks = audio_num_codebooks
         self.codebook_pad_token_id = codebook_pad_token_id
         self.codebook_eos_token_id = codebook_eos_token_id
+        self.text_start_token_id = text_start_token_id
+        self.text_end_token_id = text_end_token_id
+        self.im_end_token_id = im_end_token_id
+        self.audio_frame_freq = audio_frame_freq
         super().__init__(**kwargs)
 
 

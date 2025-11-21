@@ -22,7 +22,7 @@ import audioread
 import av
 import librosa
 import numpy as np
-from typing import Union, Optional, Tuple, Unpack
+from typing import Union, Optional, Tuple, Unpack, List
 import torch
 import torchaudio
 from ...models.qwen2_5_omni import Qwen2_5OmniProcessor
@@ -113,9 +113,22 @@ class ChromaProcessor(Qwen2_5OmniProcessor):
     def __init__(self, image_processor=None, video_processor=None, feature_extractor=None, tokenizer=None, chat_template=None):
         super().__init__(image_processor, video_processor, feature_extractor, tokenizer, chat_template)
 
-    def __call__(self, *args, **kwargs: Unpack[ChromaProcessorKwargs]) -> BatchFeature:
+    def __call__(
+        self,
+        conversations: Optional[List[dict]] = None,
+        prompt_audio: Optional[List[str]] = None,
+        prompt_text: Optional[List[str]] = None,
+        **kwargs: Unpack[ChromaProcessorKwargs]) -> BatchFeature:
+
+        assert prompt_audio is not None, "prompt_audio can not be empty"
+        assert prompt_text is not None, "prompt_text can not be empty"
+
+        N = len(conversations)
+        assert len(prompt_audio) == N, f"prompt_audio length {len(prompt_audio)} != conversations length {N}"
+        assert len(prompt_text) == N, f"prompt_text length {len(prompt_text)} != conversations length {N}"
+
         # thinker processor
-        text, audios = self.apply_chat_template(*args, **kwargs)
+        text, audios = self.apply_chat_template(conversations, **kwargs)
         thinker_inputs = super().__call__(
             text=text,
             audio=audios,
@@ -124,31 +137,19 @@ class ChromaProcessor(Qwen2_5OmniProcessor):
             use_audio_in_video=False
         )
 
-        inputs = {f"thinker_{k}": v for k, v in thinker_inputs.items()}
+        thinker_inputs = {f"thinker_{k}": v for k, v in thinker_inputs.items()}
 
-        prompt_audio = kwargs.get("prompt_audio")
-        prompt_text = kwargs.get("prompt_text")
-        assert prompt_audio is not None, "prompt_audio can not be empty"
-        assert prompt_text is not None, "prompt_text can not be empty"
-
-        prompt_ids = super().__call__(text=prompt_text, return_tensors="pt")
-
-        if isinstance(prompt_audio, str):
-            prompt_audio_tensor = self.load_audio(prompt_audio, kwargs.get("target_sample_rate", 24000))
-        elif isinstance(prompt_audio, torch.Tensor):
-            prompt_audio_tensor = prompt_audio
-        elif isinstance(prompt_audio, np.ndarray):
-            prompt_audio_tensor = torch.from_numpy(prompt_audio)
-            if prompt_audio_tensor.dim() > 1:
-                prompt_audio_tensor = prompt_audio_tensor.squeeze()
-        else:
-            raise ValueError(f"prompt audio must be str, tensor or numpy, but got  {type(prompt_audio)}")
+        inputs = super().__call__(text=prompt_text, return_tensors="pt", padding=True)
+        prompt_audio_wavs = [self.load_audio(audio, kwargs.get("target_sample_rate", 24000)) for audio in prompt_audio]
+        prompt_audio_cutoffs = torch.tensor([len(audio) for audio in prompt_audio_wavs], dtype=torch.long)
+        prompt_audio_tensor = torch.nn.utils.rnn.pad_sequence(prompt_audio_wavs, batch_first=True).unsqueeze(1)  # add channel dimension
 
         return BatchFeature(
             data={
+                **thinker_inputs,
                 **inputs,
-                **prompt_ids,
-                'input_values': prompt_audio_tensor
+                'input_values': prompt_audio_tensor,
+                'input_values_cutoffs': prompt_audio_cutoffs
             },
             tensor_type=kwargs.get("return_tensors"),
         )
