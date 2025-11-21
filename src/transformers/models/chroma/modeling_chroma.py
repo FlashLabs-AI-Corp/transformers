@@ -690,7 +690,7 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
         
         self._prompt_embeddings_initialized = True
 
-    def chroma.generate(**inputs, max_new_tokens=100, do_sample=True, temperature=0.7, top_p=0.8, use_cache=False)(
+    def _build_prompt_embeds(
         self, 
         input_ids, 
         attention_mask=None, 
