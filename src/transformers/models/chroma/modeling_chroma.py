@@ -352,7 +352,7 @@ class ChromaDecoderForCausalLM(ChromaPreTrainedModel, GenerationMixin):
                 loss: [B, seq_len]
                 logits: [B, seq_len, codebook_num, 2051]
         """
-
+       
         if inputs_embeds is None and input_ids is None:
             raise ValueError("inputs_embeds or input_ids is required")
 
@@ -370,7 +370,6 @@ class ChromaDecoderForCausalLM(ChromaPreTrainedModel, GenerationMixin):
                     f"past_codebook_num is greater than audio_num_codebooks - 1, {past_codebook_num} > {self.config.audio_num_codebooks - 1}")
             offset = (torch.arange(input_ids.shape[-1],
                                    device=input_ids.device) + past_codebook_num) * self.config.vocab_size
-            # print(f"offset: {offset}")
             audio_ids_embed = self.audio_embedding.embed_audio_tokens(input_ids + offset)
             inputs_embeds = torch.cat([backbone_last_hidden_state.unsqueeze(1), audio_ids_embed],
                                       dim=1) if backbone_last_hidden_state is not None else audio_ids_embed
@@ -501,6 +500,7 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
         else:
             return self.embed_tokens(ids.to(self.device))
 
+    @torch.inference_mode()
     def prepare_inputs_for_generation(
         self,
         input_ids: Optional[torch.LongTensor] = None,
@@ -560,8 +560,8 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
         else:
             # subsequent steps: build inputs_embeds from input_ids
             inputs_embeds = self.backbone.emb_audio_frames(
-                input_ids.squeeze(0).to(self.device)
-            ).unsqueeze(0)
+                input_ids.to(self.device)
+            )
 
         if thinker_input_ids is not None and thinker_flag:
             # 增量更新 thinker 的新 token
@@ -569,83 +569,48 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
                 thinker_input_ids, thinker_attention_mask, thinker_cache_position, thinker_past_key_values
             )
 
-            # thinker 前向
-            with torch.inference_mode():
-                thinker_outputs = self.thinker(
-                    input_ids=thinker_input_ids,
-                    input_features=thinker_input_features,
-                    attention_mask=thinker_attention_mask,
-                    feature_attention_mask=thinker_feature_attention_mask,
-                    use_cache=True,
-                    output_hidden_states=True,
-                    output_attentions=False,
-                    return_dict=True,
-                    past_key_values=thinker_past_key_values,
-                    cache_position=thinker_cache_position,
-                    use_audio_in_video=False,
-                )
+            # thinker forward
+            thinker_outputs = self.thinker(
+                input_ids=thinker_input_ids,
+                input_features=thinker_input_features,
+                attention_mask=thinker_attention_mask,
+                feature_attention_mask=thinker_feature_attention_mask,
+                use_cache=True,
+                output_hidden_states=True,
+                output_attentions=False,
+                return_dict=True,
+                past_key_values=thinker_past_key_values,
+                cache_position=thinker_cache_position,
+                use_audio_in_video=False,
+            )
 
             thinker_hidden_states = thinker_outputs.hidden_states[-1]
             thinker_past_key_values = thinker_outputs.past_key_values
             thinker_logits = thinker_outputs.logits
 
-            # 预测下一个 token -> 构造 [hidden, next_token_emb]
+            # get next token
             thinker_next_ids = thinker_logits[:, -1:, :].argmax(dim=-1)
-
-            # if text_streamer is not None:
-            #     text_streamer.put(thinker_next_ids.cpu())
-
             next_token_emb = self._embed_text_tokens(thinker_next_ids)
-
-            stop_eos = self.config.im_end_token_id
-            is_eos = (thinker_next_ids.squeeze(-1) == stop_eos).any()
+            is_eos = (thinker_next_ids.squeeze(-1) == self.config.im_end_token_id).any()
             thinker_input_ids = thinker_next_ids if not is_eos else None
 
-            # if is_eos and text_streamer is not None:
-            #     text_streamer.end()
-
+            # extend inputs_embeds for thinker extension
             thinker_input_embeddings = torch.cat([thinker_hidden_states[:, -1:, :], next_token_emb], dim=1)
+            inputs_embeds = torch.cat([inputs_embeds, thinker_input_embeddings], dim=1)
 
-            if inputs_embeds is not None:
-                # 有inputs_embeds(prompt或audio frame),拼接thinker
-                inputs_embeds = torch.cat([inputs_embeds, thinker_input_embeddings], dim=1)
-            else:
-                # 预填充后第一步,只有thinker
-                inputs_embeds = thinker_input_embeddings
-
-            # 扩展 attention_mask
-            if inputs_embeds is not None:
-                attention_mask = attention_mask.resize_(
-                    (attention_mask.shape[0], attention_mask.shape[1] + thinker_input_embeddings.shape[1])
-                ).fill_(1)
-
-        if input_values is not None:
-            # HACK: 当有input_values时,_build_prompt_embeds返回的attention_mask可能长度不对
-            # 需要resize到和inputs_embeds一致(因为后面可能拼接了thinker)
-            # 预填充模式下,prompt_embeds和attention_mask已经在prefill中正确构建,
-            # 后续thinker拼接时会正确扩展attention_mask,所以不需要这个resize
+            # extend attention_mask for thinker extension
             attention_mask = attention_mask.resize_(
-                (attention_mask.shape[0], inputs_embeds.shape[1])
+                (attention_mask.shape[0], attention_mask.shape[1] + thinker_input_embeddings.shape[1])
             ).fill_(1)
 
-        # 计算正确的 cache_position
         past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
-
-        # cache_position 必须与 inputs_embeds.shape[1] 的长度一致
         cache_position = torch.arange(
             past_seen_tokens,
-            past_seen_tokens + inputs_embeds.shape[1],
+            past_seen_tokens + inputs_embeds.shape[1],  
             device=inputs_embeds.device
         )
 
-        if thinker_input_ids is None:
-            # thinker 已停止，后续不再需要注入
-            next_thinker_flag = False
-        else:
-            # thinker 仍在运行，继续 1:2 节奏
-            next_thinker_flag = not thinker_flag
 
-        # 4) 组装返回
         model_inputs = {
             "input_ids": None,
             "input_embeddings": inputs_embeds,
@@ -654,7 +619,7 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
             "cache_position": cache_position,
             "use_cache": True,
             "output_hidden_states": True,
-            # thinker 相关状态透传
+            # thinker related states
             "thinker_past_key_values": thinker_past_key_values,
             "thinker_hidden_states": thinker_hidden_states,
             "thinker_logits": thinker_logits,
@@ -663,8 +628,7 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
             "thinker_input_features": thinker_input_features,
             "thinker_feature_attention_mask": thinker_feature_attention_mask,
             "thinker_cache_position": thinker_cache_position,
-            "thinker_flag": next_thinker_flag,
-            # "text_streamer": text_streamer
+            "thinker_flag": not thinker_flag if thinker_input_ids is not None else False,
         }
 
         return model_inputs
@@ -674,17 +638,21 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
         
         # text_start_emb
         text_start_ids = torch.tensor([self.config.text_start_token_id], dtype=torch.long, device=self.device)
-        text_start_emb = self.thinker.model.embed_tokens(text_start_ids).squeeze(0)
+        text_start_emb = self.thinker.model.embed_tokens(text_start_ids).unsqueeze(0)
         self.register_buffer("text_start_emb", text_start_emb, persistent=False)
         
         # text_end_emb
         text_end_ids = torch.tensor([self.config.text_end_token_id], dtype=torch.long, device=self.device)
-        text_end_emb = self.thinker.model.embed_tokens(text_end_ids).squeeze(0)
+        text_end_emb = self.thinker.model.embed_tokens(text_end_ids).unsqueeze(0)
         self.register_buffer("text_end_emb", text_end_emb, persistent=False)
         
         # eos_token_audio
-        eos_token_audio = torch.zeros(self.config.backbone_config.hidden_size, dtype=text_start_emb.dtype, device=self.device)
+        eos_token_audio = torch.zeros((1, 1, self.config.backbone_config.hidden_size), dtype=text_start_emb.dtype, device=self.device)
         self.register_buffer("eos_token_audio", eos_token_audio, persistent=False)
+
+        # attention_mask
+        attention_mask = torch.ones(1, 1, dtype=torch.long, device=self.device)
+        self.register_buffer("attention_mask", attention_mask, persistent=False)
 
 
         
@@ -733,15 +701,23 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
         prompt_text_emb = self._embed_text_tokens(input_ids.to(self.device))
         prompt_text_attention_mask = attention_mask.clone()
 
-        len_embeddings = prompt_text_emb.shape[1] + prompt_audio_emb.shape[1] + 3
-        input_embeddings = torch.empty(N, len_embeddings, self.config.backbone_config.hidden_size, device=self.device)
-        input_embeddings[:, :prompt_text_emb.shape[1]] = prompt_text_emb
-        input_embeddings[:, prompt_text_emb.shape[1]:prompt_text_emb.shape[1] + prompt_audio_emb.shape[1]] = prompt_audio_emb
-        input_embeddings[:, prompt_text_emb.shape[1] + prompt_audio_emb.shape[1]] = self.text_start_emb
-        input_embeddings[:, prompt_text_emb.shape[1] + prompt_audio_emb.shape[1] + 1] = self.text_end_emb
-        input_embeddings[:, prompt_text_emb.shape[1] + prompt_audio_emb.shape[1] + 2] = self.eos_token_audio
-        
-        _attention_mask = torch.cat([prompt_text_attention_mask, prompt_audio_attention_mask], dim=1)
+        # Concatenate all embeddings using torch.cat for better performance
+        input_embeddings = torch.cat([
+            self.text_start_emb.expand(N, 1, -1),
+            prompt_text_emb,
+            self.text_end_emb.expand(N, 1, -1),
+            prompt_audio_emb,
+            self.eos_token_audio.expand(N, 1, -1),
+        ], dim=1)
+
+        _attention_mask = torch.cat([
+            self.attention_mask.expand(N, 1),
+            prompt_text_attention_mask,
+            self.attention_mask.expand(N, 1),
+            prompt_audio_attention_mask,
+            self.attention_mask.expand(N, 1),
+        ], dim=1)
+
 
         if attention_mask is not None:
             attention_mask = attention_mask.resize_(_attention_mask.shape)

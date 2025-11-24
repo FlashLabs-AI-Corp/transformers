@@ -115,9 +115,9 @@ class ChromaProcessor(Qwen2_5OmniProcessor):
 
     def __call__(
         self,
-        conversations: Optional[List[dict]] = None,
-        prompt_audio: Optional[List[str]] = None,
-        prompt_text: Optional[List[str]] = None,
+        conversations: List[dict],
+        prompt_audio: List[str],
+        prompt_text: List[str],
         **kwargs: Unpack[ChromaProcessorKwargs]) -> BatchFeature:
 
         assert prompt_audio is not None, "prompt_audio can not be empty"

@@ -267,10 +267,9 @@ class ChromaGenerationMixin(GenerationMixin):
                 next_tokens = sample_topk(next_token_logits, top_k, temperature)
             else:
                 next_tokens = torch.argmax(next_token_logits, dim=-1)
-                next_tokens = next_tokens.unsqueeze(0)
+                next_tokens = next_tokens.unsqueeze(1)  # [B, 1]
 
             # decoder generate
-            # 会自动调用decoder的prepare_inputs_for_generation进行生成， decoder需要继承GenerationMixin
             frame_codes = self.decoder.generate(
                 input_ids=next_tokens,
                 backbone_last_hidden_state=backbone_last_hidden_state.clone(),
