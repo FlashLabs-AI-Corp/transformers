@@ -22,12 +22,10 @@ from typing import Optional, Tuple, Dict, Union, Any
 from .configuration_chroma import ChromaConfig, ChromaDecoderConfig, ChromaBackboneConfig
 from .generation_chroma import ChromaGenerationMixin
 from ..llama import LlamaConfig
-from ...generation.streamers import BaseStreamer
 from ..llama.modeling_llama import LlamaModel
 from ..qwen2_5_omni import Qwen2_5OmniThinkerForConditionalGeneration
 from ...utils import ModelOutput
 from ...modeling_utils import PreTrainedModel
-from ...models.auto import AutoModel
 from ...utils import logging
 from ...generation import GenerationMixin
 from ...cache_utils import Cache
@@ -77,7 +75,7 @@ class ChromaOutputWithPast(ModelOutput):
     thinker_feature_attention_mask: Optional[torch.FloatTensor] = None
     thinker_cache_position: Optional[torch.FloatTensor] = None
     thinker_flag: Optional[bool] = None
-    text_streamer: Optional[BaseStreamer] = None
+    # text_streamer: Optional[BaseStreamer] = None # for text output
 
     backbone_loss: Optional[torch.FloatTensor] = None
     backbone_logits: torch.FloatTensor = None
@@ -93,6 +91,9 @@ class ChromaOutputWithPast(ModelOutput):
 
 
 class ChromaLlamaModel(LlamaModel):
+    """
+    Base model for chroma
+    """
 
     def __init__(self, config: LlamaConfig):
         super().__init__(config)
@@ -352,7 +353,7 @@ class ChromaDecoderForCausalLM(ChromaPreTrainedModel, GenerationMixin):
                 loss: [B, seq_len]
                 logits: [B, seq_len, codebook_num, 2051]
         """
-       
+
         if inputs_embeds is None and input_ids is None:
             raise ValueError("inputs_embeds or input_ids is required")
 
@@ -482,8 +483,8 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
         assert self.decoder.config.audio_num_codebooks == config.audio_num_codebooks, f"decoder.config.audio_num_codebooks {self.decoder.config.audio_num_codebooks} != config.audio_num_codebooks {config.audio_num_codebooks}"
 
         self.post_init()
-        
-        # 标记 buffer 是否已初始化（延迟初始化以避免 meta device 问题）
+
+        # initialize prompt embedding
         self._prompt_embeddings_initialized = False
 
     def _tie_weights(self):
@@ -491,8 +492,6 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
             self.backbone.audio_embedding.embed_audio_tokens,
             self.decoder.audio_embedding.embed_audio_tokens,
         )
-
-
 
     def _embed_text_tokens(self, ids: torch.Tensor) -> torch.Tensor:
         if hasattr(self, "thinker"):
@@ -548,15 +547,18 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
             inputs_embeds: [B, seq_len, hidden_size]
 
         use input_ids to build prompt_embeds, if it is the step that need thinker to generate next token, then inject its hidden states and next token embedding into inputs_embeds
-        生成输入拼接（1:2 节奏）：
-          - 首步（有 input_values）构建 prompt 后强制注入一次 thinker 对；
-          - 后续每步：先拼上一帧音频，再按 thinker_flag 控制是否注入 thinker（True 才注入），
-            注入后将 thinker_flag 置 False；未注入时将其置 True，从而形成 1:2。
+
+        Generate input concatenation (1:2 ratio):
+            First step (with input_values): build the prompt, then forcefully inject one pair of thinker tokens;
+            Subsequent steps: first concatenate the previous frame's audio, then inject thinker tokens only if thinker_flag is True;
+            After injection, set thinker_flag = False;
+            If no injection occurs, set thinker_flag = True;
         """
 
         if input_values is not None:
             # first step: build inputs_embeds from input_values
-            inputs_embeds, attention_mask = self._build_prompt_embeds(input_ids, attention_mask, input_values, input_values_cutoffs)
+            inputs_embeds, attention_mask = self._build_prompt_embeds(input_ids, attention_mask, input_values,
+                                                                      input_values_cutoffs)
         else:
             # subsequent steps: build inputs_embeds from input_ids
             inputs_embeds = self.backbone.emb_audio_frames(
@@ -564,7 +566,7 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
             )
 
         if thinker_input_ids is not None and thinker_flag:
-            # 增量更新 thinker 的新 token
+            # Incrementally update the new token(s) for thinker
             thinker_input_ids, thinker_attention_mask, thinker_cache_position, thinker_past_key_values = self._update_thinker_model_kwargs(
                 thinker_input_ids, thinker_attention_mask, thinker_cache_position, thinker_past_key_values
             )
@@ -606,10 +608,9 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
         past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
         cache_position = torch.arange(
             past_seen_tokens,
-            past_seen_tokens + inputs_embeds.shape[1],  
+            past_seen_tokens + inputs_embeds.shape[1],
             device=inputs_embeds.device
         )
-
 
         model_inputs = {
             "input_ids": None,
@@ -635,33 +636,32 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
 
     @torch.no_grad()
     def _register_prompt_embeddings(self):
-        
+
         # text_start_emb
         text_start_ids = torch.tensor([self.config.text_start_token_id], dtype=torch.long, device=self.device)
         text_start_emb = self.thinker.model.embed_tokens(text_start_ids).unsqueeze(0)
         self.register_buffer("text_start_emb", text_start_emb, persistent=False)
-        
+
         # text_end_emb
         text_end_ids = torch.tensor([self.config.text_end_token_id], dtype=torch.long, device=self.device)
         text_end_emb = self.thinker.model.embed_tokens(text_end_ids).unsqueeze(0)
         self.register_buffer("text_end_emb", text_end_emb, persistent=False)
-        
+
         # eos_token_audio
-        eos_token_audio = torch.zeros((1, 1, self.config.backbone_config.hidden_size), dtype=text_start_emb.dtype, device=self.device)
+        eos_token_audio = torch.zeros((1, 1, self.config.backbone_config.hidden_size), dtype=text_start_emb.dtype,
+                                      device=self.device)
         self.register_buffer("eos_token_audio", eos_token_audio, persistent=False)
 
         # attention_mask
         attention_mask = torch.ones(1, 1, dtype=torch.long, device=self.device)
         self.register_buffer("attention_mask", attention_mask, persistent=False)
 
-
-        
         self._prompt_embeddings_initialized = True
 
     def _build_prompt_embeds(
-        self, 
-        input_ids, 
-        attention_mask=None, 
+        self,
+        input_ids,
+        attention_mask=None,
         input_values=None,
         input_values_cutoffs=None,
     ):
@@ -684,8 +684,10 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
 
         N = input_ids.shape[0]
         assert N == input_values.shape[0], f"input_values.shape[0] {input_values.shape[0]} != input_ids.shape[0] {N}"
-        assert N == input_values_cutoffs.shape[0], f"input_values_cutoffs.shape[0] {input_values_cutoffs.shape[0]} != input_ids.shape[0] {input_ids.shape[0]}"
-        assert N == attention_mask.shape[0], f"attention_mask.shape[0] {attention_mask.shape[0]} != input_ids.shape[0] {N}"
+        assert N == input_values_cutoffs.shape[
+            0], f"input_values_cutoffs.shape[0] {input_values_cutoffs.shape[0]} != input_ids.shape[0] {input_ids.shape[0]}"
+        assert N == attention_mask.shape[
+            0], f"attention_mask.shape[0] {attention_mask.shape[0]} != input_ids.shape[0] {N}"
 
         audio_codes = self.codec_model.encode(input_values).audio_codes  # add channel dimension
         audio_codes = audio_codes[:, :self.config.audio_num_codebooks, :]  # HACK: may not necessary
@@ -695,7 +697,9 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
         )
         prompt_audio_attention_mask = torch.ones((N, prompt_audio_emb.shape[1]), device=self.device)
         audio_codes_cutoffs = torch.ceil(input_values_cutoffs / self.config.audio_frame_freq).long()
-        mask = torch.arange(prompt_audio_emb.shape[1], device=self.device).unsqueeze(0).expand(N, -1) >= audio_codes_cutoffs.unsqueeze(1).expand(N, -1)
+        mask = torch.arange(prompt_audio_emb.shape[1], device=self.device).unsqueeze(0).expand(N,
+                                                                                               -1) >= audio_codes_cutoffs.unsqueeze(
+            1).expand(N, -1)
         prompt_audio_attention_mask[mask] = 0
 
         prompt_text_emb = self._embed_text_tokens(input_ids.to(self.device))
@@ -717,7 +721,6 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
             prompt_audio_attention_mask,
             self.attention_mask.expand(N, 1),
         ], dim=1)
-
 
         if attention_mask is not None:
             attention_mask = attention_mask.resize_(_attention_mask.shape)
@@ -758,7 +761,6 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
             past_key_values:
             inputs_embeds:
             labels:
-            loss_stride:
             use_cache:
             output_attentions:
             output_hidden_states:
@@ -780,18 +782,10 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
             output_attentions=output_attentions,
         )
 
-        return self._build_outputs(
-            loss=backbone_outputs.loss,
-            logits=backbone_outputs.logits,
-            hidden_states=backbone_outputs.hidden_states,
-            past_key_values=backbone_outputs.past_key_values,
-            **kwargs
-        )
-
-    def _build_outputs(self, **kwargs) -> ChromaOutputWithPast:
         fields_names = [f.name for f in fields(ChromaOutputWithPast)]
-        outputs = ChromaOutputWithPast(**{k: v for k, v in kwargs.items() if k in fields_names})
-        return outputs
+        return ChromaOutputWithPast(
+            **{k: v for k, v in kwargs.items() if k in fields_names}
+        )
 
     def _update_model_kwargs_for_generation(
         self,
@@ -801,8 +795,8 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
         num_new_tokens: int = 1
     ) -> Dict[str, Any]:
         """
-        更新生成过程中的model_kwargs
-        确保thinker相关状态正确传递到下一步
+        Update model_kwargs during the generation process
+        Ensure that thinker-related states are correctly passed to the next step
         """
 
         for key in PASSTHROUGH_KEYS:
@@ -811,8 +805,12 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
         for key in ONE_TIME_KEYS:
             model_kwargs[key] = None
 
-        model_kwargs = super()._update_model_kwargs_for_generation(outputs, model_kwargs, is_encoder_decoder,
-                                                                   num_new_tokens)
+        model_kwargs = super()._update_model_kwargs_for_generation(
+            outputs,
+            model_kwargs,
+            is_encoder_decoder,
+            num_new_tokens
+        )
         return model_kwargs
 
     def _update_thinker_model_kwargs(
@@ -822,6 +820,18 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
         thinker_cache_position: Optional[torch.Tensor] = None,
         thinker_past_key_values: Optional[Cache] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[Cache]]:
+
+        """
+        update thinker model kwargs during the generation process
+        Args:
+            thinker_input_ids:
+            thinker_attention_mask:
+            thinker_cache_position:
+            thinker_past_key_values:
+
+        Returns:
+
+        """
 
         past_seen_tokens = thinker_past_key_values.get_seq_length() if thinker_past_key_values is not None else 0
         num_new_tokens = thinker_input_ids.shape[1]
