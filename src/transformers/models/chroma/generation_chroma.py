@@ -93,7 +93,7 @@ class ChromaGenerationMixin(GenerationMixin):
         for criterion in criteria:
             if not isinstance(criterion, MaxLengthCriteria):
                 logger.warning(
-                    f"Csm does not support {criterion.__class__.__name__} stopping criteria, it will be ignored."
+                    f"Chroma does not support {criterion.__class__.__name__} stopping criteria, it will be ignored."
                 )
             else:
                 kept_criteria.append(criterion)
@@ -130,19 +130,19 @@ class ChromaGenerationMixin(GenerationMixin):
 
         if {decoder_min_new_tokens, decoder_max_new_tokens} != {self.decoder.config.audio_num_codebooks - 1}:
             raise ValueError(
-                f"depth_decoder_generation_config's min_new_tokens ({decoder_min_new_tokens}) and max_new_tokens ({decoder_max_new_tokens}) must be equal to self.config.num_codebooks - 1 ({self.decoder.config.audio_num_codebooks - 1})"
+                f"decoder_generation_config's min_new_tokens ({decoder_min_new_tokens}) and max_new_tokens ({decoder_max_new_tokens}) must be equal to self.config.num_codebooks - 1 ({self.decoder.config.audio_num_codebooks - 1})"
             )
         elif self.decoder.generation_config.return_dict_in_generate:
             self.decoder.generation_config.return_dict_in_generate = False
 
-        # Monkey patch the get_generation_mode method to support CSM model
+        # Monkey patch the get_generation_mode method to support Chroma model
         original_get_generation_mode = generation_config.get_generation_mode
 
         def patched_get_generation_mode(assistant_model=None):
             generation_mode = original_get_generation_mode(assistant_model)
             if generation_mode not in [GenerationMode.GREEDY_SEARCH, GenerationMode.SAMPLE]:
                 raise ValueError(
-                    f"Generation mode {generation_mode} is not supported for CSM model. Please set generation parameters to use greedy or sampling generation."
+                    f"Generation mode {generation_mode} is not supported for Chroma model. Please set generation parameters to use greedy or sampling generation."
                 )
 
             return generation_mode
@@ -223,7 +223,7 @@ class ChromaGenerationMixin(GenerationMixin):
 
             # prepare variable output controls (note: some models won't accept all output controls)
             model_inputs.update({"output_attentions": output_attentions} if output_attentions else {})
-            # *************** Csm specific ***************
+            # *************** Chroma specific ***************
             model_inputs.update({"output_hidden_states": True})
             # ============================================
 
@@ -308,7 +308,7 @@ class ChromaGenerationMixin(GenerationMixin):
             if streamer is not None:
                 streamer.put(next_tokens.cpu())
 
-            # *************** Csm specific ***************
+            # *************** Chroma specific ***************
             # for the eos stopping criteria, is it expected that the eos token is the same for each codebook !!!!
             unfinished_sequences = unfinished_sequences & ~(
                 input_ids[:, -1, :-1] == self.config.codebook_eos_token_id
@@ -354,8 +354,8 @@ class ChromaGenerationMixin(GenerationMixin):
         **kwargs: dict
     ) -> Union[GenerateNonBeamOutput, torch.LongTensor]:
         r"""
-        This method overrides [`~generation.utils.GenerationMixin.generate`] to match the specifics of the Csm model.
-        Indeed, Csm model requires a custom generation sampling step:
+        This method overrides [`~generation.utils.GenerationMixin.generate`] to match the specifics of the Chroma model.
+        Indeed, Chroma model requires a custom generation sampling step:
         1. Infer the backbone model to sample the first codebook token
         2. Call generate on the depth decoder with the first codebook token as `input_ids` to sample the next codebook tokens
         3. Use these generated codebook tokens as `input_ids` to sample the next first codebook token using the backbone model
@@ -410,7 +410,7 @@ class ChromaGenerationMixin(GenerationMixin):
                 forwarded to the `forward` function of the model. Depth decoder specific kwargs should be prefixed with *depth_decoder_*.
 
         Return:
-            [`CsmGenerateOutput`] or `torch.LongTensor` or `list[torch.FloatTensor]`: A [`CsmGenerateOutput`]
+            [`ChromaGenerateOutput`] or `torch.LongTensor` or `list[torch.FloatTensor]`: A [`ChromaGenerateOutput`]
             (if `return_dict_in_generate=True` or when `config.return_dict_in_generate=True`) or a `torch.LongTensor` when `output_audio=False`
             or a `list[torch.FloatTensor]` otherwise.
 
