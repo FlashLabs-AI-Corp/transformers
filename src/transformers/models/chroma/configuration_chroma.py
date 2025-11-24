@@ -19,7 +19,6 @@ from typing import Optional
 from ...utils import logging
 from ... import PretrainedConfig
 from ...modeling_rope_utils import RopeParameters, rope_config_validation, standardize_rope_params
-from ..auto.configuration_auto import AutoConfig
 from ..qwen2_5_omni import Qwen2_5OmniThinkerConfig
 from ..mimi import MimiConfig
 
