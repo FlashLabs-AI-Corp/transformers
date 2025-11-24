@@ -14,17 +14,17 @@
 # limitations under the License.
 
 
-import logging
 import base64
+import logging
 from io import BytesIO
 
-import audioread
 import av
+import torch
 import librosa
+import audioread
+import torchaudio
 import numpy as np
 from typing import Union, Optional, Tuple, Unpack, List
-import torch
-import torchaudio
 from ...models.qwen2_5_omni import Qwen2_5OmniProcessor
 from ...processing_utils import AudioKwargs, ProcessingKwargs
 from ...feature_extraction_utils import BatchFeature
@@ -109,8 +109,26 @@ class ChromaProcessorKwargs(ProcessingKwargs, total=False):
 
 
 class ChromaProcessor(Qwen2_5OmniProcessor):
+    r"""
+        Constructs a Chroma processor inherit from Qwen2.5Omni processor.
+        [`ChromaProcessor`] offers all the functionalities of [`Qwen2VLImageProcessor`], [`WhisperFeatureExtractor`], and [`Qwen2TokenizerFast`]. See the
+        [`~ChromaProcessor.__call__`] and [`~ChromaProcessor.decode`] for more information.
 
-    def __init__(self, image_processor=None, video_processor=None, feature_extractor=None, tokenizer=None, chat_template=None):
+        Args:
+            image_processor ([`Qwen2VLImageProcessor`], *optional*):
+                The image processor.
+            video_processor ([`Qwen2VLVideoProcessor`], *optional*):
+                The video processor.
+            feature_extractor ([`WhisperFeatureExtractor`], *optional*):
+                The audio feature extractor.
+            tokenizer ([`Qwen2TokenizerFast`], *optional*):
+                The text tokenizer.
+            chat_template (`Optional[str]`, *optional*):
+                The Jinja template to use for formatting the conversation. If not provided, the default chat template is used.
+        """
+
+    def __init__(self, image_processor=None, video_processor=None, feature_extractor=None, tokenizer=None,
+                 chat_template=None):
         super().__init__(image_processor, video_processor, feature_extractor, tokenizer, chat_template)
 
     def __call__(
@@ -118,7 +136,8 @@ class ChromaProcessor(Qwen2_5OmniProcessor):
         conversations: List[dict],
         prompt_audio: List[str],
         prompt_text: List[str],
-        **kwargs: Unpack[ChromaProcessorKwargs]) -> BatchFeature:
+        **kwargs: Unpack[ChromaProcessorKwargs]
+    ) -> BatchFeature:
 
         assert prompt_audio is not None, "prompt_audio can not be empty"
         assert prompt_text is not None, "prompt_text can not be empty"
@@ -136,13 +155,14 @@ class ChromaProcessor(Qwen2_5OmniProcessor):
             padding=True,
             use_audio_in_video=False
         )
-
         thinker_inputs = {f"thinker_{k}": v for k, v in thinker_inputs.items()}
 
         inputs = super().__call__(text=prompt_text, return_tensors="pt", padding=True)
         prompt_audio_wavs = [self.load_audio(audio, kwargs.get("target_sample_rate", 24000)) for audio in prompt_audio]
         prompt_audio_cutoffs = torch.tensor([len(audio) for audio in prompt_audio_wavs], dtype=torch.long)
-        prompt_audio_tensor = torch.nn.utils.rnn.pad_sequence(prompt_audio_wavs, batch_first=True).unsqueeze(1)  # add channel dimension
+        prompt_audio_tensor = torch.nn.utils.rnn.pad_sequence(
+            prompt_audio_wavs, batch_first=True
+        ).unsqueeze(1)  # add channel dimension
 
         return BatchFeature(
             data={
@@ -155,7 +175,15 @@ class ChromaProcessor(Qwen2_5OmniProcessor):
         )
 
     def load_audio(self, audio_path: str | None, target_sample_rate: int = 24000) -> torch.Tensor:
-        """加载音频文件并重采样"""
+        """
+        load audio wav and resample it to target sample rate
+        Args:
+            audio_path:
+            target_sample_rate:
+
+        Returns:
+
+        """
         try:
             audio_tensor, sample_rate = torchaudio.load(audio_path)
             if audio_tensor.shape[0] > 1:
@@ -178,11 +206,20 @@ class ChromaProcessor(Qwen2_5OmniProcessor):
         chat_template=None,
         **kwargs
     ) -> Tuple[str, list]:
-        """应用聊天模板"""
+        """
+        apply chat_template.jinja template to format conversations
+        Args:
+            conversations:
+            chat_template:
+            **kwargs:
+
+        Returns:
+
+        """
         if isinstance(conversations[0], dict):
             conversations = [conversations]
         audios = process_audio_info(conversations, use_audio_in_video=False)
-        return super().apply_chat_template(conversations, chat_template, **kwargs), audios
+        return self.tokenizer.apply_chat_template(conversations, chat_template, **kwargs), audios
 
 
 __all__ = ["ChromaProcessor"]
