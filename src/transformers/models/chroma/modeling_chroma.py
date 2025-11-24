@@ -782,10 +782,18 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
             output_attentions=output_attentions,
         )
 
-        fields_names = [f.name for f in fields(ChromaOutputWithPast)]
-        return ChromaOutputWithPast(
-            **{k: v for k, v in kwargs.items() if k in fields_names}
+        return self._build_outputs(
+            loss=backbone_outputs.loss,
+            logits=backbone_outputs.logits,
+            hidden_states=backbone_outputs.hidden_states,
+            past_key_values=backbone_outputs.past_key_values,
+            **kwargs
         )
+
+    def _build_outputs(self, **kwargs) -> ChromaOutputWithPast:
+        fields_names = [f.name for f in fields(ChromaOutputWithPast)]
+        outputs = ChromaOutputWithPast(**{k: v for k, v in kwargs.items() if k in fields_names})
+        return outputs
 
     def _update_model_kwargs_for_generation(
         self,
