@@ -656,6 +656,10 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
         attention_mask = torch.ones(1, 1, dtype=torch.long, device=self.device)
         self.register_buffer("attention_mask", attention_mask, persistent=False)
 
+        # arrange for audio frame cutoff
+        arr = torch.arange(self.config.backbone_config.max_position_embeddings, device=self.device)
+        self.register_buffer("arr", arr, persistent=False)
+
         self._prompt_embeddings_initialized = True
 
     def _build_prompt_embeds(
@@ -696,11 +700,10 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
             audio_codes.permute(0, 2, 1).to(self.device)
         )
         prompt_audio_attention_mask = torch.ones((N, prompt_audio_emb.shape[1]), device=self.device)
-        audio_codes_cutoffs = torch.ceil(input_values_cutoffs / self.config.audio_frame_freq).long()
-        mask = torch.arange(prompt_audio_emb.shape[1], device=self.device).unsqueeze(0).expand(N,
-                                                                                               -1) >= audio_codes_cutoffs.unsqueeze(
-            1).expand(N, -1)
-        prompt_audio_attention_mask[mask] = 0
+
+        audio_codes_cutoffs = torch.ceil(input_values_cutoffs / self.config.audio_frame_freq).long().unsqueeze(1)
+        arr = self.arr[:prompt_audio_emb.shape[1]].unsqueeze(0).expand(N, -1)
+        prompt_audio_attention_mask[arr >= audio_codes_cutoffs] = 0
 
         prompt_text_emb = self._embed_text_tokens(input_ids.to(self.device))
         prompt_text_attention_mask = attention_mask.clone()
