@@ -564,7 +564,10 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
             inputs_embeds = self.backbone.emb_audio_frames(
                 input_ids.to(self.device)
             )
+            # attention_mask is already updated by parent class _update_model_kwargs_for_generation
+            # It should already have the correct length for past_key_values + new tokens
 
+        # TODO: thinker eos needs to support batch
         if thinker_input_ids is not None and thinker_flag:
             # Incrementally update the new token(s) for thinker
             thinker_input_ids, thinker_attention_mask, thinker_cache_position, thinker_past_key_values = self._update_thinker_model_kwargs(
@@ -600,10 +603,10 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
             thinker_input_embeddings = torch.cat([thinker_hidden_states[:, -1:, :], next_token_emb], dim=1)
             inputs_embeds = torch.cat([inputs_embeds, thinker_input_embeddings], dim=1)
 
-            # extend attention_mask for thinker extension
-            attention_mask = attention_mask.resize_(
-                (attention_mask.shape[0], attention_mask.shape[1] + thinker_input_embeddings.shape[1])
-            ).fill_(1)
+            # extend attention_mask for thinker extension (2 additional tokens)
+            N = inputs_embeds.shape[0]
+            thinker_attention_mask_ext = torch.ones((N, thinker_input_embeddings.shape[1]), dtype=attention_mask.dtype, device=self.device)
+            attention_mask = torch.cat([attention_mask, thinker_attention_mask_ext], dim=1)
 
         past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
         cache_position = torch.arange(
@@ -611,6 +614,20 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
             past_seen_tokens + inputs_embeds.shape[1],
             device=inputs_embeds.device
         )
+
+        # Ensure attention_mask has the correct length: past_seen_tokens + current_tokens
+        expected_attention_mask_length = past_seen_tokens + inputs_embeds.shape[1]
+        if attention_mask.shape[1] != expected_attention_mask_length:
+            # Adjust attention_mask to match expected length
+            if attention_mask.shape[1] < expected_attention_mask_length:
+                # Need to extend attention_mask
+                N = attention_mask.shape[0]
+                padding_length = expected_attention_mask_length - attention_mask.shape[1]
+                padding_mask = torch.ones((N, padding_length), dtype=attention_mask.dtype, device=self.device)
+                attention_mask = torch.cat([attention_mask, padding_mask], dim=1)
+            else:
+                # attention_mask is too long, truncate it (this shouldn't happen normally)
+                attention_mask = attention_mask[:, :expected_attention_mask_length]
 
         model_inputs = {
             "input_ids": None,
@@ -725,12 +742,7 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
             self.attention_mask.expand(N, 1),
         ], dim=1)
 
-        if attention_mask is not None:
-            attention_mask = attention_mask.resize_(_attention_mask.shape)
-        else:
-            attention_mask = _attention_mask
-
-        return input_embeddings, attention_mask
+        return input_embeddings, _attention_mask
 
     def _left_pad_compact_vec(self, x):
         is_token = (x != self.config.codebook_pad_token_id).int()
@@ -816,11 +828,18 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
         for key in ONE_TIME_KEYS:
             model_kwargs[key] = None
 
+        # Calculate actual num_new_tokens based on cache_position if available
+        if outputs.cache_position is not None and model_kwargs.get("past_key_values") is not None:
+            # cache_position tells us how many tokens were actually processed
+            actual_num_new_tokens = outputs.cache_position.shape[0] if hasattr(outputs.cache_position, 'shape') else num_new_tokens
+        else:
+            actual_num_new_tokens = num_new_tokens
+
         model_kwargs = super()._update_model_kwargs_for_generation(
             outputs,
             model_kwargs,
             is_encoder_decoder,
-            num_new_tokens
+            actual_num_new_tokens
         )
         return model_kwargs
 
