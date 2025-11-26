@@ -598,7 +598,7 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
             next_token_emb = self._embed_text_tokens(thinker_next_ids)
 
             next_token_eos = thinker_next_ids.squeeze(-1) == self.config.im_end_token_id
-            thinker_eos = thinker_eos & next_token_eos if thinker_eos is not None else next_token_eos
+            thinker_eos = thinker_eos | next_token_eos if thinker_eos is not None else next_token_eos
             thinker_input_ids = thinker_next_ids if not thinker_eos.all() else None
 
             # Incrementally extend inputs_embeds for thinker generation
@@ -607,7 +607,7 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
 
             # Incrementally extend attention_mask for thinker generation (thinker_eos)
             attention_mask = attention_mask.resize_(attention_mask.shape[0], attention_mask.shape[1] + 2)
-            attention_mask[:, -2:] = thinker_eos.unsqueeze(1).long()
+            attention_mask[:, -2:] = (~thinker_eos).unsqueeze(1).long()
 
 
         past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
