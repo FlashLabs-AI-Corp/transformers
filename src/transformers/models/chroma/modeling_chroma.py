@@ -555,6 +555,7 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
             If no injection occurs, set thinker_flag = True;
         """
 
+
         if input_values is not None:
             # first step: build inputs_embeds from input_values
             inputs_embeds, attention_mask = self._build_prompt_embeds(input_ids, attention_mask, input_values,
@@ -618,17 +619,8 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
 
         # Ensure attention_mask has the correct length: past_seen_tokens + current_tokens
         expected_attention_mask_length = past_seen_tokens + inputs_embeds.shape[1]
-        if attention_mask.shape[1] != expected_attention_mask_length:
-            # Adjust attention_mask to match expected length
-            if attention_mask.shape[1] < expected_attention_mask_length:
-                # Need to extend attention_mask
-                N = attention_mask.shape[0]
-                padding_length = expected_attention_mask_length - attention_mask.shape[1]
-                padding_mask = torch.ones((N, padding_length), dtype=attention_mask.dtype, device=self.device)
-                attention_mask = torch.cat([attention_mask, padding_mask], dim=1)
-            else:
-                # attention_mask is too long, truncate it (this shouldn't happen normally)
-                attention_mask = attention_mask[:, :expected_attention_mask_length]
+        assert attention_mask.shape[1] == expected_attention_mask_length, f"attention_mask.shape[1] {attention_mask.shape[1]} != expected_attention_mask_length {expected_attention_mask_length}"
+
 
         model_inputs = {
             "input_ids": None,
@@ -745,8 +737,9 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
         ], dim=1)
 
         if attention_mask is not None:
-            attention_mask = attention_mask.resize_(attention_mask.shape[0], attention_mask.shape[1] + _attention_mask.shape[1])
-            attention_mask[:, -_attention_mask.shape[1]:] = _attention_mask
+            # in-place operation
+            attention_mask = attention_mask.resize_(_attention_mask.shape)
+            attention_mask[:, :] = _attention_mask
         else:
             attention_mask = _attention_mask
 
