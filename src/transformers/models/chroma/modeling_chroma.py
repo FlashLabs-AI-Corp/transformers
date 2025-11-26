@@ -41,10 +41,10 @@ PASSTHROUGH_KEYS = [
     "thinker_past_key_values",
     "thinker_input_features",
     "thinker_feature_attention_mask",
+    "thinker_eos",
     "thinker_hidden_states",
     "thinker_logits",
     "thinker_flag",
-    "text_streamer",
     "prefilled",
 ]
 
@@ -520,7 +520,7 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
         prompt_audio: Optional[torch.FloatTensor] = None,
         prompt_ids: Optional[torch.LongTensor] = None,
         thinker_flag: bool = True,
-        # text_streamer: Optional[BaseStreamer] = None,
+        thinker_eos: Optional[torch.BoolTensor] = None,
         **kwargs,
     ):
         """
@@ -567,7 +567,6 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
             # attention_mask is already updated by parent class _update_model_kwargs_for_generation
             # It should already have the correct length for past_key_values + new tokens
 
-        # TODO: thinker eos needs to support batch
         if thinker_input_ids is not None and thinker_flag:
             # Incrementally update the new token(s) for thinker
             thinker_input_ids, thinker_attention_mask, thinker_cache_position, thinker_past_key_values = self._update_thinker_model_kwargs(
@@ -596,17 +595,19 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
             # get next token
             thinker_next_ids = thinker_logits[:, -1:, :].argmax(dim=-1)
             next_token_emb = self._embed_text_tokens(thinker_next_ids)
-            is_eos = (thinker_next_ids.squeeze(-1) == self.config.im_end_token_id).any()
-            thinker_input_ids = thinker_next_ids if not is_eos else None
 
-            # extend inputs_embeds for thinker extension
+            next_token_eos = thinker_next_ids.squeeze(-1) == self.config.im_end_token_id
+            thinker_eos = thinker_eos & next_token_eos if thinker_eos is not None else next_token_eos
+            thinker_input_ids = thinker_next_ids if not thinker_eos.all() else None
+
+            # Incrementally extend inputs_embeds for thinker generation
             thinker_input_embeddings = torch.cat([thinker_hidden_states[:, -1:, :], next_token_emb], dim=1)
             inputs_embeds = torch.cat([inputs_embeds, thinker_input_embeddings], dim=1)
 
-            # extend attention_mask for thinker extension (2 additional tokens)
-            N = inputs_embeds.shape[0]
-            thinker_attention_mask_ext = torch.ones((N, thinker_input_embeddings.shape[1]), dtype=attention_mask.dtype, device=self.device)
-            attention_mask = torch.cat([attention_mask, thinker_attention_mask_ext], dim=1)
+            # Incrementally extend attention_mask for thinker generation (thinker_eos)
+            attention_mask = attention_mask.resize_(attention_mask.shape[0], attention_mask.shape[1] + 2)
+            attention_mask[:, -2:] = thinker_eos.unsqueeze(1).long()
+
 
         past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
         cache_position = torch.arange(
@@ -647,6 +648,7 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
             "thinker_feature_attention_mask": thinker_feature_attention_mask,
             "thinker_cache_position": thinker_cache_position,
             "thinker_flag": not thinker_flag if thinker_input_ids is not None else False,
+            "thinker_eos": thinker_eos,
         }
 
         return model_inputs
@@ -742,7 +744,13 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
             self.attention_mask.expand(N, 1),
         ], dim=1)
 
-        return input_embeddings, _attention_mask
+        if attention_mask is not None:
+            attention_mask = attention_mask.resize_(attention_mask.shape[0], attention_mask.shape[1] + _attention_mask.shape[1])
+            attention_mask[:, -_attention_mask.shape[1]:] = _attention_mask
+        else:
+            attention_mask = _attention_mask
+
+        return input_embeddings, attention_mask
 
     def _left_pad_compact_vec(self, x):
         is_token = (x != self.config.codebook_pad_token_id).int()
