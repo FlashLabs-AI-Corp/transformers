@@ -46,6 +46,7 @@ PASSTHROUGH_KEYS = [
     "thinker_logits",
     "thinker_flag",
     "prefilled",
+    "attention_mask",   #  we need to control the attention_mask manually, not just increment by 1
 ]
 
 ONE_TIME_KEYS = [
@@ -62,6 +63,7 @@ class ChromaOutputWithPast(ModelOutput):
     logits: torch.FloatTensor | None = None
     past_key_values: Optional[Tuple[torch.FloatTensor, ...]] = None
     cache_position: Optional[int] = None
+    attention_mask: Optional[torch.LongTensor] = None
 
     # all thinker inputs should be carried through the forward function to the next step
     thinker_loss: Optional[torch.FloatTensor] = None
@@ -606,9 +608,7 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
             inputs_embeds = torch.cat([inputs_embeds, thinker_input_embeddings], dim=1)
 
             # Incrementally extend attention_mask for thinker generation (thinker_eos)
-            attention_mask = attention_mask.resize_(attention_mask.shape[0], attention_mask.shape[1] + 2)
-            attention_mask[:, -2:] = (~thinker_eos).unsqueeze(1).long()
-
+            attention_mask = torch.cat([attention_mask] + [~thinker_eos.unsqueeze(1).long()] * 2, dim=1)
 
         past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
         cache_position = torch.arange(
@@ -728,7 +728,7 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
             self.eos_token_audio.expand(N, 1, -1),
         ], dim=1)
 
-        _attention_mask = torch.cat([
+        attention_mask = torch.cat([
             self.attention_mask.expand(N, 1),
             prompt_text_attention_mask,
             self.attention_mask.expand(N, 1),
@@ -736,20 +736,7 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
             self.attention_mask.expand(N, 1),
         ], dim=1)
 
-        if attention_mask is not None:
-            # in-place operation
-            attention_mask = attention_mask.resize_(_attention_mask.shape)
-            attention_mask[:, :] = _attention_mask
-        else:
-            attention_mask = _attention_mask
-
         return input_embeddings, attention_mask
-
-    def _left_pad_compact_vec(self, x):
-        is_token = (x != self.config.codebook_pad_token_id).int()
-        _, idx = torch.sort(is_token, dim=-1, descending=False, stable=True)
-        x_reordered = torch.gather(x, dim=1, index=idx)
-        return x_reordered
 
     def forward(
         self,
@@ -803,6 +790,7 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
             logits=backbone_outputs.logits,
             hidden_states=backbone_outputs.hidden_states,
             past_key_values=backbone_outputs.past_key_values,
+            attention_mask=attention_mask,
             **kwargs
         )
 
@@ -820,28 +808,23 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
     ) -> Dict[str, Any]:
         """
         Update model_kwargs during the generation process
-        Ensure that thinker-related states are correctly passed to the next step
         """
 
+        # Update thinker-related keys
         for key in PASSTHROUGH_KEYS:
             model_kwargs[key] = getattr(outputs, key, None)
 
+        # Clear one-time keys
         for key in ONE_TIME_KEYS:
             model_kwargs[key] = None
-
-        # Calculate actual num_new_tokens based on cache_position if available
-        if outputs.cache_position is not None and model_kwargs.get("past_key_values") is not None:
-            # cache_position tells us how many tokens were actually processed
-            actual_num_new_tokens = outputs.cache_position.shape[0] if hasattr(outputs.cache_position, 'shape') else num_new_tokens
-        else:
-            actual_num_new_tokens = num_new_tokens
 
         model_kwargs = super()._update_model_kwargs_for_generation(
             outputs,
             model_kwargs,
             is_encoder_decoder,
-            actual_num_new_tokens
+            1  # Always use 1 to let parent add 1 token for next step
         )
+        
         return model_kwargs
 
     def _update_thinker_model_kwargs(
