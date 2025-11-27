@@ -77,6 +77,7 @@ class ChromaOutputWithPast(ModelOutput):
     thinker_feature_attention_mask: Optional[torch.FloatTensor] = None
     thinker_cache_position: Optional[torch.FloatTensor] = None
     thinker_flag: Optional[bool] = None
+    thinker_eos: Optional[torch.BoolTensor] = None
     # text_streamer: Optional[BaseStreamer] = None # for text output
 
     backbone_loss: Optional[torch.FloatTensor] = None
@@ -570,6 +571,15 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
             # attention_mask is already updated by parent class _update_model_kwargs_for_generation
             # It should already have the correct length for past_key_values + new tokens
 
+        # Initialize thinker_eos if it's None
+        print(f"[DEBUG] prepare_inputs_for_generation called, incoming thinker_eos: {thinker_eos}")
+        if thinker_eos is None:
+            if thinker_input_ids is not None:
+                thinker_eos = torch.zeros(thinker_input_ids.shape[0], dtype=torch.bool, device=thinker_input_ids.device)
+            else:
+                thinker_eos = torch.zeros(inputs_embeds.shape[0], dtype=torch.bool, device=inputs_embeds.device)
+            print(f"[DEBUG] thinker_eos initialized to: {thinker_eos}")
+
         if thinker_input_ids is not None and thinker_flag:
             # Incrementally update the new token(s) for thinker
             thinker_input_ids, thinker_attention_mask, thinker_cache_position, thinker_past_key_values = self._update_thinker_model_kwargs(
@@ -599,8 +609,11 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
             thinker_next_ids = thinker_logits[:, -1:, :].argmax(dim=-1)
             next_token_emb = self._embed_text_tokens(thinker_next_ids)
 
+            # Update thinker_eos: once True, always True
             next_token_eos = thinker_next_ids.squeeze(-1) == self.config.im_end_token_id
-            thinker_eos = thinker_eos | next_token_eos if thinker_eos is not None else next_token_eos
+            print(f"[DEBUG] Before update - thinker_eos: {thinker_eos}, next_token_eos: {next_token_eos}")
+            thinker_eos = thinker_eos | next_token_eos
+            print(f"[DEBUG] After update - thinker_eos: {thinker_eos}")
             thinker_input_ids = thinker_next_ids if not thinker_eos.all() else None
 
             # Incrementally extend inputs_embeds for thinker generation
@@ -642,7 +655,10 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
             "thinker_flag": not thinker_flag if thinker_input_ids is not None else False,
             "thinker_eos": thinker_eos,
         }
-
+        print(f"thinker_attention_mask shape:{thinker_attention_mask.shape}")
+        print(f"attention mask:{attention_mask}")
+        print(f"thinker_flag:{thinker_flag}")
+        print(f"[DEBUG] Returning thinker_eos: {thinker_eos}")
         return model_inputs
 
     @torch.no_grad()
