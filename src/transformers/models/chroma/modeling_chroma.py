@@ -609,17 +609,22 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
 
             # Update thinker_eos: once True, always True
             next_token_eos = thinker_next_ids.squeeze(-1) == self.config.im_end_token_id
-            thinker_eos = thinker_eos | next_token_eos
-            thinker_input_ids = thinker_next_ids if not thinker_eos.all() else None
+            new_thinker_eos = thinker_eos | next_token_eos
 
             # Incrementally extend inputs_embeds for thinker generation
             thinker_input_embeddings = torch.cat([thinker_hidden_states[:, -1:, :], next_token_emb], dim=1)
             inputs_embeds = torch.cat([inputs_embeds, thinker_input_embeddings], dim=1)
 
-            # Incrementally extend attention_mask for thinker generation (thinker_eos)
-            # Convert ~thinker_eos to proper attention mask values (1 for not EOS, 0 for EOS)
+            # Incrementally extend attention_mask for thinker generation
+            # The two thinker tokens (hidden state + next token) should have attention_mask = 1
+            # even if the next token is EOS, because they need to be processed in this step
+            # Only tokens added AFTER thinker reached EOS should have attention_mask = 0
             thinker_attention_values = (~thinker_eos).long().unsqueeze(1)
             attention_mask = torch.cat([attention_mask, thinker_attention_values, thinker_attention_values], dim=1)
+
+            # Update thinker_eos for next iteration
+            thinker_eos = new_thinker_eos
+            thinker_input_ids = thinker_next_ids if not thinker_eos.all() else None
 
         past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
         cache_position = torch.arange(
