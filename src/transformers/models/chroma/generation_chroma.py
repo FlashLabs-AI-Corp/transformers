@@ -275,7 +275,7 @@ class ChromaGenerationMixin(GenerationMixin):
                 backbone_last_hidden_state=backbone_last_hidden_state.clone(),
                 max_new_tokens=self.config.decoder_config.audio_num_codebooks - 1,
                 min_new_tokens=self.config.decoder_config.audio_num_codebooks - 1,
-                do_sample=True,
+                do_sample=do_sample,
                 use_cache=True,
                 temperature=temperature,
                 top_k=top_k,
