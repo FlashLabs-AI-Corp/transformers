@@ -134,7 +134,7 @@ class ChromaProcessor(Qwen2_5OmniProcessor):
     def __call__(
         self,
         conversations: List[dict],
-        prompt_audio: List[str],
+        prompt_audio: List[Union[str, np.ndarray]],
         prompt_text: List[str],
         **kwargs: Unpack[ChromaProcessorKwargs]
     ) -> BatchFeature:
@@ -158,7 +158,8 @@ class ChromaProcessor(Qwen2_5OmniProcessor):
         thinker_inputs = {f"thinker_{k}": v for k, v in thinker_inputs.items()}
 
         inputs = super().__call__(text=prompt_text, return_tensors="pt", padding=True)
-        prompt_audio_wavs = [self.load_audio(audio, kwargs.get("target_sample_rate", 24000)) for audio in prompt_audio]
+        target_sample_rate = kwargs.get("target_sample_rate", 24000)
+        prompt_audio_wavs = [self.load_audio(audio, target_sample_rate) for audio in prompt_audio]
         prompt_audio_cutoffs = torch.tensor([len(audio) for audio in prompt_audio_wavs], dtype=torch.long)
         prompt_audio_tensor = torch.nn.utils.rnn.pad_sequence(
             prompt_audio_wavs, batch_first=True
@@ -174,26 +175,54 @@ class ChromaProcessor(Qwen2_5OmniProcessor):
             tensor_type=kwargs.get("return_tensors"),
         )
 
-    def load_audio(self, audio_path: str | None, target_sample_rate: int = 24000) -> torch.Tensor:
+    def load_audio(self, audio: Union[str, np.ndarray], target_sample_rate: int = 24000, source_sample_rate: int = None) -> torch.Tensor:
         """
         load audio wav and resample it to target sample rate
         Args:
-            audio_path:
-            target_sample_rate:
+            audio: 音频文件路径或 numpy.ndarray 格式的音频数据
+            target_sample_rate: 目标采样率
+            source_sample_rate: 源采样率（当 audio 为 numpy.ndarray 时必需）
 
         Returns:
-
+            torch.Tensor: 重采样后的音频张量
         """
         try:
-            audio_tensor, sample_rate = torchaudio.load(audio_path)
-            if audio_tensor.shape[0] > 1:
-                audio_tensor = torch.mean(audio_tensor, dim=0, keepdim=True)
+            if isinstance(audio, np.ndarray):
+                # 处理 numpy.ndarray 输入
+                if audio.ndim > 1:
+                    # 多声道音频，转换为单声道
+                    audio_tensor = torch.from_numpy(audio).float()
+                    if audio_tensor.shape[0] > 1:  # (channels, samples)
+                        audio_tensor = torch.mean(audio_tensor, dim=0, keepdim=False)
+                    elif audio_tensor.ndim == 2 and audio_tensor.shape[1] > 1:  # (samples, channels)
+                        audio_tensor = torch.mean(audio_tensor, dim=1, keepdim=False)
+                    else:
+                        audio_tensor = audio_tensor.squeeze()
+                else:
+                    audio_tensor = torch.from_numpy(audio).float()
+                
+                # 如果提供了源采样率，则进行重采样
+                if source_sample_rate is not None and source_sample_rate != target_sample_rate:
+                    audio_tensor = torchaudio.functional.resample(
+                        audio_tensor,
+                        orig_freq=source_sample_rate,
+                        new_freq=target_sample_rate
+                    )
+                elif source_sample_rate is None:
+                    logging.warning(
+                        f"source_sample_rate not provided for numpy.ndarray input, assuming sample rate is {target_sample_rate}"
+                    )
+            else:
+                # 处理文件路径输入
+                audio_tensor, sample_rate = torchaudio.load(audio)
+                if audio_tensor.shape[0] > 1:
+                    audio_tensor = torch.mean(audio_tensor, dim=0, keepdim=True)
 
-            audio_tensor = torchaudio.functional.resample(
-                audio_tensor.squeeze(0),
-                orig_freq=sample_rate,
-                new_freq=target_sample_rate
-            )
+                audio_tensor = torchaudio.functional.resample(
+                    audio_tensor.squeeze(0),
+                    orig_freq=sample_rate,
+                    new_freq=target_sample_rate
+                )
 
             return audio_tensor
         except Exception as e:
