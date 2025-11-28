@@ -489,3 +489,9 @@ class ChromaGenerationMixin(GenerationMixin):
             return audio
         else:
             return generate_output
+
+
+__all__ = [
+    "ChromaGenerateOutput",
+    "ChromaGenerationMixin",
+]

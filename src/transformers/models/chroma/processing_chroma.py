@@ -251,4 +251,8 @@ class ChromaProcessor(Qwen2_5OmniProcessor):
         return self.tokenizer.apply_chat_template(conversations, chat_template, **kwargs), audios
 
 
-__all__ = ["ChromaProcessor"]
+__all__ = [
+    "ChromaAudioKwargs",
+    "ChromaProcessor",
+    "ChromaProcessorKwargs",
+]

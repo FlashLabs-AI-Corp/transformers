@@ -62,6 +62,7 @@ class ChromaOutputWithPast(ModelOutput):
     hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
     logits: torch.FloatTensor | None = None
     past_key_values: Optional[Tuple[torch.FloatTensor, ...]] = None
+    attentions: Optional[Tuple[torch.FloatTensor, ...]] = None
     cache_position: Optional[int] = None
     attention_mask: Optional[torch.LongTensor] = None
 
@@ -805,6 +806,7 @@ class ChromaForConditionalGeneration(ChromaPreTrainedModel, ChromaGenerationMixi
             logits=backbone_outputs.logits,
             hidden_states=backbone_outputs.hidden_states,
             past_key_values=backbone_outputs.past_key_values,
+            attentions=backbone_outputs.attentions,
             attention_mask=attention_mask,
             **kwargs
         )
